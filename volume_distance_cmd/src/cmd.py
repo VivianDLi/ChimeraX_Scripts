@@ -14,8 +14,8 @@ def volume_distance(
     session, source: Volume, to: Volume, internal: bool = False
 ) -> None:
     """Calculate distances from a segmented volume to the closest other segmented volume and displays them."""
-    source_data, target_data = source.data, to.data
-    _calculate_volume_distance(session, source_data, target_data, internal)
+    source_data, target_data = source.data.read_matrix(), to.data.read_matrix()
+    _calculate_volume_distance(session, source.name, source_data, to.name, target_data, internal)
     session.logger.info(
         f"Calculated distances from volume '{source.name}' to volume '{to.name}'."
     )
@@ -162,12 +162,31 @@ def _calculate_distance_internal(
     return closest_points, distances
 
 
-def _display_distance(session, source_points: np.ndarray, closest_points: np.ndarray, distances: np.array) -> None:
+def _display_distance(session, source_name: str, source_points: np.ndarray, surface_name: str, closest_points: np.ndarray, radius: float = 0.5, color: tuple = (255, 255, 0, 255)) -> None:
     """Display the distance between two points in ChimeraX."""
-    pass
+    from chimerax.markers import MarkerSet
+    from chimerax.core.colors import Color
+    from chimerax.core.commands import run
+    # Ensure source_points and closest_points are the same length
+    if len(source_points) != len(closest_points):
+        session.logger.error(
+            "Source points, closest points, and distances must have the same length."
+        )
+        return
+    session.logger.info(f"Displaying {len(source_points)} distances from '{source_name}' to '{surface_name}'.")
+    # Define markers to visualize the distances
+    source_marker_set = MarkerSet(session, name=source_name)
+    source_markers = [source_marker_set.create_marker(source_point, color, radius) for source_point in source_points]
+    surface_marker_set = MarkerSet(session, name=surface_name)
+    surface_markers = [surface_marker_set.create_marker(closest_point, color, radius) for closest_point in closest_points]
+    # Display distances between markers
+    for i in range(len(distances)):
+        source_marker = source_markers[i]
+        surface_marker = surface_markers[i]
+        run(session, "distance %s %s" % (source_marker.atomspec, surface_marker.atomspec))
 
 def _calculate_volume_distance(
-    session, source_volume: np.ndarray, target_volume: np.ndarray, internal: bool = False, time_it: bool = True
+    session, source_name: str, source_volume: np.ndarray, target_name: str, target_volume: np.ndarray, internal: bool = False, time_it: bool = True
 ) -> None:
     """Calculate distances from a segmented volume to the closest other segmented volume and displays them."""
     if time_it:
@@ -185,7 +204,7 @@ def _calculate_volume_distance(
         # Use octree method
         closest_points, distances = _calculate_distance(source_points, surface_points)
     # closest_points is n x 3 and distances is n x 1
-    _display_distance(session, source_points, closest_points, distances)
+    _display_distance(session, source_name, source_points, target_name, closest_points)
     
     if time_it:
         end_time = time.time()
