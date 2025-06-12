@@ -6,37 +6,29 @@ will be displayed without the ChimeraX- prefix.
 -->
 
 <BundleInfo name="ChimeraX-VolumeDistanceCommand"
-            version="0.1.0"
-            package="chimerax.volume_distance_cmd">
+            version="0.1" package="chimerax.volume_distance"
+            minSessionVersion="1" maxSessionVersion="1">
 
     <Author>Vivian Li</Author>
     <Email>vdl21@cantab.ac.uk</Email>
-    <!--Add GitHuB <URL>-->
+    <URL>https://github.com/VivianDLi/ChimeraX_Scripts/tree/main/volume_distance_cmd</URL>
     <Synopsis>Calculate the shortest distance between distinct sections of two volumes.</Synopsis>
     <Description>This command calculates the shortest distance between distinct sections of two volumes. This is useful for determining the distances between elements of two segmentation volumes to view statistically, for example, to produce a histogram of the shortest distance between nuclear pores and nearby mitochondria.</Description>
 
     <!-- Categories is a list where this bundle should appear -->
     <Categories>
-        <Category>Volume</Category>
+        <Category name="Structure Analaysis"/>
     </Categories>
-
-    <!-- DataFiles is a list of additional files to include in the bundle -->
-    <DataFiles>
-        <DataFile>docs/user/commands/tutorial.html</DataFile>
-    </DataFiles>
 
     <!-- Dependencies on other ChimeraX/Python packages -->
     <Dependencies>
-        <Dependency name="ChimeraX-Core" version=">=1.1"/>
-        <Dependency name="numpy" version=">=1.20"/>
-        <Dependency name="scipy" version=">=1.6"/>
+        <Dependency name="ChimeraX-Core" version="~=1.9"/>
+        <Dependency name="numpy" version="~=1.26"/>
+        <Dependency name="scikit-learn" version="~=1.7"/>
     </Dependencies>
 
     <Classifiers>
-        <!-- Development Status should be compatible with bundle version number -->
-        <PythonClassifier>Development Status :: 3 - Alpha</PythonClassifier>
-        <PythonClassifier>License :: Freeware</PythonClassifier>
         <!-- ChimeraX classifiers describe supplied functionality -->
-        <ChimeraXClassifier>ChimeraX :: Command :: volume distance :: Volume :: Calculate distances between distinct sections of two volumes</ChimeraXClassifier>
+        <ChimeraXClassifier>ChimeraX :: Command :: volume distance :: Structure Analysis :: Calculate distances between distinct sections of two volumes</ChimeraXClassifier>
     </Classifiers>
 </BundleInfo>

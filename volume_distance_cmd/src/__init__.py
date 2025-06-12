@@ -15,10 +15,10 @@ class _MyAPI(BundleAPI):
         # and import function to call and argument description from cmd.py
         # If the description does not contain a 'synopsis', we use the one from 'ci'
         # taken from bundle_info.xml
-        from .cmd import calculate_volume_distance, volume_distance_desc
+        from .cmd import volume_distance, volume_distance_desc
 
         if ci.name == "volume distance":
-            func = calculate_volume_distance
+            func = volume_distance
             desc = volume_distance_desc
         else:
             raise ValueError("Trying to register an unknown command: %s" % ci.name)

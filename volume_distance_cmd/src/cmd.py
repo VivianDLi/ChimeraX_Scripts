@@ -1,10 +1,14 @@
+from queue import PriorityQueue
+from typing import Tuple
 from .octree import Point, OcTree
 
 import numpy as np
 from scipy import spatial, cluster
 
-from chimerax.core.commands import CmdDesc, register, VolumeArg
-               
+from chimerax.core.commands import CmdDesc
+from chimerax.map import Volume
+from chimerax.map.mapargs import MapArg
+
 # ============================================================================
 # Functions and descriptions for registering using ChimeraX bundle API
 # ============================================================================
@@ -14,25 +18,37 @@ def volume_distance(
     session, source: Volume, to: Volume, internal: bool = False
 ) -> None:
     """Calculate distances from a segmented volume to the closest other segmented volume and displays them."""
-    source_data, target_data = source.data.read_matrix(), to.data.read_matrix()
-    _calculate_volume_distance(session, source.name, source_data, to.name, target_data, internal)
+    session.logger.info("Loading volume data...")
+    source_data, target_data = source.matrix(), to.matrix()
+    source_idx, target_idx = np.argwhere(source_data > 0), np.argwhere(target_data > 0)
+    if source_idx.size == 0 or target_idx.size == 0:
+        session.logger.warning("One or both volumes do not contain any non-zero data.")
+        return
+    session.logger.info("Getting points from volumes...")
+    source_points = source.data.ijk_transform.transform_points(source_idx)
+    target_points = to.data.ijk_transform.transform_points(target_idx)
+    session.logger.info("Calculating distances...")
+    _calculate_volume_distance(
+        session, source.name, source_points, to.name, target_points, internal
+    )
     session.logger.info(
         f"Calculated distances from volume '{source.name}' to volume '{to.name}'."
     )
 
 
 volume_distance_desc = CmdDesc(
-        required=[("source", VolumeArg)],
-        keywords=[("to", VolumeArg), ("internal", bool)],
-        required_arguments=["to"],
-        synopsis="Calculate the distance from distinct structures in a 3D volume to the closest points in another volume.",
-    )
+    required=[("source", MapArg)],
+    keyword=[("to", MapArg), ("internal", bool)],
+    required_arguments=["to"],
+    synopsis="Calculate the distance from distinct structures in a 3D volume to the closest points in another volume.",
+)
 
 # ============================================================================
 # Functions intended for internal use by the bundle
 # ============================================================================
 
 #### Define distance calculation functions ####
+
 
 def _calculate_distance_between_points(point1: Point, point2: Point) -> float:
     """Calculate the Euclidean distance between two points."""
@@ -41,7 +57,8 @@ def _calculate_distance_between_points(point1: Point, point2: Point) -> float:
         + (point1.y - point2.y) ** 2
         + (point1.z - point2.z) ** 2
     )
-    
+
+
 def _calculate_distance_to_node(point: Point, node: OcTree) -> float:
     """Calculate the minimum distance from a point to an octree node."""
     # Check if the point is within the bounds of the node
@@ -49,7 +66,7 @@ def _calculate_distance_to_node(point: Point, node: OcTree) -> float:
         return 0.0
     # If the node is empty, return infinity
     if node.point == Point(-1, -1, -1):
-        return float('inf')
+        return float("inf")
     # Get the top-left and bottom-right corners of the node
     top_left, bottom_right = node.top_left, node.bottom_right
     # Calculate distances
@@ -57,67 +74,64 @@ def _calculate_distance_to_node(point: Point, node: OcTree) -> float:
     dy = max(bottom_right.y - point.y, point.y - top_left.y, 0)
     dz = max(bottom_right.z - point.z, point.z - top_left.z, 0)
     # Return the Euclidean distance from the point to the closest point on the node's surface
-    return np.sqrt(dx ** 2 + dy ** 2 + dz ** 2))
-    
+    return np.sqrt(dx**2 + dy**2 + dz**2)
+
+
 def _find_closest_point_octree(point: Point, octree: OcTree) -> Point:
     """Find the closest point in the octree to the given point."""
     queue = PriorityQueue()
     queue.put((0, octree))  # Start with the root node and distance 0
     while not queue.empty():
-        current_distance, current_node = queue.get()
+        _, current_node = queue.get()
         # Check for internal node and add children to the queue
         if current_node.point is None:
             for child in current_node.children:
                 if child.point is None:
                     # Calculate the distance from the point to the child node
-                    distance_to_child = calculate_distance_to_node(point, child)
+                    distance_to_child = _calculate_distance_to_node(point, child)
                     queue.put((distance_to_child, child))
                 elif child.point == Point(-1, -1, -1):
                     # If the child is an empty node, we can skip it
                     continue
                 else:
                     # If the child is a leaf node with a point, calculate the distance
-                    distance = calculate_distance(point, child.point)
+                    distance = _calculate_distance(point, child.point)
                     queue.put((distance, child))
         # Return distance if the current node is a leaf node with a point
         elif current_node.point != Point(-1, -1, -1):
             return current_node.point
         else:
             # No empty nodes should be added to the queue
-            sesssion.logger.error(
-                f"Unexpected state: current node is neither internal nor leaf with a point."
-            )
-            return
+            raise ValueError("Empty node encountered in search queue.")
+
 
 #### Define ChimeraX commands for calculating distances ####
 
 
 def _separate_structures(volume: np.ndarray, radius: float = 2.0) -> np.ndarray:
-    """Separate 3D classifications into distinct structures using ward clustering."""
-    points = np.argwhere(volume > 0)
-    Z = cluster.hierarchy.ward(points)
-    cluster_idxs = cluster.hierarchy.fcluster(Z, radius, criterion='distance')
+    """Separate 3D classifications into distinct structures using DBSCAN clustering and pre-computed neighbours for memory efficiency."""
+    Z = cluster.hierarchy.ward(volume)
+    cluster_idxs = cluster.hierarchy.fcluster(Z, radius, criterion="distance")
     clusters = np.unique(cluster_idxs)
     separated_volumes = np.array([], dtype=np.uint8)
     for cluster_id in clusters:
         mask = cluster_idxs == cluster_id
-        cluster_points = points[mask]
-        if len(cluster_points) > 0:
-            separated_volume = np.zeros_like(volume, dtype=np.uint8)
-            separated_volume[tuple(cluster_points.T)] = 1
-            separated_volumes.append(separated_volume)
+        cluster_points = volume[mask]
+        separated_volumes.append(cluster_points)
     return separated_volumes
 
-def _calculate_surface_points(volume: np.ndarray, radius: float = 1.0, point_tol: int = 1) -> np.ndarray:
+
+def _calculate_surface_points(
+    volume: np.ndarray, radius: float = 1.0, point_tol: int = 1
+) -> np.ndarray:
     """Calculate surface points of a 3D volume as an nx3 numpy array using surface normal estimation."""
     # Get points from volume
-    points = np.argwhere(volume > 0)
-    tree = spatial.KDTree(points)
+    tree = spatial.KDTree(volume)
     surface_points = []
-    for point in points:
+    for point in volume:
         # Find local neighbourhood around query point
         idx = tree.query_ball_point(point, radius, eps=0, p=2)
-        nbrhood = points[idx]
+        nbrhood = volume[idx]
         # Estimate normal direction at query point using SVD
         nbrhood_centered = nbrhood - np.mean(nbrhood, axis=0)
         nbrhood_cov = np.cov(nbrhood_centered)
@@ -148,7 +162,9 @@ def _calculate_distance(
         if closest_point is None:
             continue
         distance = _calculate_distance_between_points(Point(*point), closest_point)
-        closest_points.append(np.array([closest_point.x, closest_point.y, closest_point.z]))
+        closest_points.append(
+            np.array([closest_point.x, closest_point.y, closest_point.z])
+        )
         distances.append(distance)
     return closest_points, distances
 
@@ -156,56 +172,94 @@ def _calculate_distance(
 def _calculate_distance_internal(
     points: np.ndarray, surface_points: np.ndarray, max_distance: float = 1000.0
 ) -> Tuple[np.ndarray, np.ndarray]:
+    from chimerax.geometry import find_closest_points
+
     """Calculate the distance from each point to the closest point in a list of surface points using ChimeraX find_closest_points method."""
-    _, _, closest_points = find_closest_points(points, surface_points, max_distance=max_distance)
+    _, _, closest_points = find_closest_points(
+        points, surface_points, max_distance=max_distance
+    )
     distances = np.linalg.norm(points - closest_points, axis=1)
     return closest_points, distances
 
 
-def _display_distance(session, source_name: str, source_points: np.ndarray, surface_name: str, closest_points: np.ndarray, radius: float = 0.5, color: tuple = (255, 255, 0, 255)) -> None:
+def _display_distance(
+    session,
+    source_name: str,
+    source_points: np.ndarray,
+    surface_name: str,
+    closest_points: np.ndarray,
+    radius: float = 0.5,
+    color: tuple = (255, 255, 0, 255),
+) -> None:
     """Display the distance between two points in ChimeraX."""
     from chimerax.markers import MarkerSet
     from chimerax.core.colors import Color
     from chimerax.core.commands import run
+
     # Ensure source_points and closest_points are the same length
     if len(source_points) != len(closest_points):
         session.logger.error(
             "Source points, closest points, and distances must have the same length."
         )
         return
-    session.logger.info(f"Displaying {len(source_points)} distances from '{source_name}' to '{surface_name}'.")
+    session.logger.info(
+        f"Displaying {len(source_points)} distances from '{source_name}' to '{surface_name}'."
+    )
     # Define markers to visualize the distances
     source_marker_set = MarkerSet(session, name=source_name)
-    source_markers = [source_marker_set.create_marker(source_point, color, radius) for source_point in source_points]
+    source_markers = [
+        source_marker_set.create_marker(source_point, color, radius)
+        for source_point in source_points
+    ]
     surface_marker_set = MarkerSet(session, name=surface_name)
-    surface_markers = [surface_marker_set.create_marker(closest_point, color, radius) for closest_point in closest_points]
+    surface_markers = [
+        surface_marker_set.create_marker(closest_point, color, radius)
+        for closest_point in closest_points
+    ]
     # Display distances between markers
-    for i in range(len(distances)):
+    for i in range(len(source_markers)):
         source_marker = source_markers[i]
         surface_marker = surface_markers[i]
-        run(session, "distance %s %s" % (source_marker.atomspec, surface_marker.atomspec))
+        run(
+            session,
+            "distance %s %s" % (source_marker.atomspec, surface_marker.atomspec),
+        )
+
 
 def _calculate_volume_distance(
-    session, source_name: str, source_volume: np.ndarray, target_name: str, target_volume: np.ndarray, internal: bool = False, time_it: bool = True
+    session,
+    source_name: str,
+    source_volume: np.ndarray,
+    target_name: str,
+    target_volume: np.ndarray,
+    internal: bool = False,
+    time_it: bool = True,
 ) -> None:
     """Calculate distances from a segmented volume to the closest other segmented volume and displays them."""
     if time_it:
         import time
+
         start_time = time.time()
-        
+
     source_structures = _separate_structures(source_volume)
-    source_coords = np.array([np.argwhere(structure > 0) for structure in source_structures])
-    source_points = np.mean(source_coords, axis=0) # n x 3 where n is the number of structures
+    source_coords = np.array(
+        [np.argwhere(structure > 0) for structure in source_structures]
+    )
+    source_points = np.mean(
+        source_coords, axis=0
+    )  # n x 3 where n is the number of structures
     surface_points = _calculate_surface_points(target_volume)
     if internal:
         # Use ChimeraX find_closest_points method
-        closest_points, distances = _calculate_distance_internal(source_points, surface_points, max_distance=np.max(source_volume.shape))
+        closest_points, distances = _calculate_distance_internal(
+            source_points, surface_points, max_distance=np.max(source_volume.shape)
+        )
     else:
         # Use octree method
         closest_points, distances = _calculate_distance(source_points, surface_points)
     # closest_points is n x 3 and distances is n x 1
     _display_distance(session, source_name, source_points, target_name, closest_points)
-    
+
     if time_it:
         end_time = time.time()
         session.logger.info(

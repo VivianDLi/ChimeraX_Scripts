@@ -1,11 +1,10 @@
 from enum import IntEnum
 from dataclasses import dataclass, field
-from typing import List, Optional
-from queue import PriorityQueue
-import numpy as np
+from typing import List
 
 #### Logging Setup ####
 import logging
+
 logger = logging.getLogger(__name__)
 
 #### Define the Octree structure and related classes for efficient distance calculation ####
@@ -31,8 +30,8 @@ class Point:
 
 @dataclass
 class OcTree:
-    point: Point = Point(
-        -1, -1, -1
+    point: Point = field(
+        default_factory=Point(-1, -1, -1)
     )  # if None, this is a node, if (-1, -1, -1), node is empty
     top_left: Point = None  # coordinates of the top-left corner of the octree node
     bottom_right: Point = (
@@ -59,9 +58,7 @@ class OcTree:
             return
         # Check if the point is within the bounds of this node
         if not self.is_within_bounds(point):
-            logger.warning(
-                f"Point {point} is out of bounds for this octree node."
-            )
+            logger.warning(f"Point {point} is out of bounds for this octree node.")
             return
         ## Binary search to insert the point
         octant = self.get_octant(point)
@@ -71,7 +68,9 @@ class OcTree:
             return
         # Check for empty node
         elif self.children[octant].point == Point(-1, -1, -1):
-            self.children[octant] = OcTree(point=point, top_left=None, bottom_right=None)
+            self.children[octant] = OcTree(
+                point=point, top_left=None, bottom_right=None
+            )
         # Subdivide node if it already has a point
         else:
             existing_point = self.children[octant].point
@@ -137,7 +136,7 @@ class OcTree:
                 else:
                     return Octant.BOTTOM_RIGHT_BACK
 
-    def create_octree(self, octant: Octant) -> 'OcTree':
+    def create_octree(self, octant: Octant) -> "OcTree":
         """Create a new octree node for the specified octant."""
         mid_x = (self.top_left.x + self.bottom_right.x) / 2
         mid_y = (self.top_left.y + self.bottom_right.y) / 2
