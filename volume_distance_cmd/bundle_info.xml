@@ -24,6 +24,7 @@ will be displayed without the ChimeraX- prefix.
     <Dependencies>
         <Dependency name="ChimeraX-Core" version="~=1.9"/>
         <Dependency name="numpy" version="~=1.26"/>
+        <Dependency name="scipy" version="~=1.15"/>
         <Dependency name="scikit-learn" version="~=1.7"/>
     </Dependencies>
 
