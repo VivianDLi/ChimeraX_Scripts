@@ -6,7 +6,7 @@ will be displayed without the ChimeraX- prefix.
 -->
 
 <BundleInfo name="ChimeraX-VolumeDistanceCommand"
-            version="0.1" package="chimerax.volume_distance"
+            version="0.1.1" package="chimerax.volume_distance"
             minSessionVersion="1" maxSessionVersion="1">
 
     <Author>Vivian Li</Author>

@@ -4,10 +4,9 @@ from .octree import Point, OcTree
 
 import numpy as np
 from scipy import spatial
-from sklearn.cluster import DBSCAN
-from sklearn.neighbors import NearestNeighbors
+from sklearn.cluster import OPTICS, cluster_optics_dbscan
 
-from chimerax.core.commands import CmdDesc, Or, SurfaceArg
+from chimerax.core.commands import CmdDesc, Or, SurfaceArg, FloatArg, BoolArg
 from chimerax.map import Volume, VolumeSurface
 from chimerax.map.mapargs import MapArg
 
@@ -27,7 +26,7 @@ def volume_distance(
     session.logger.info("Loading volume data...")
     if isinstance(source, VolumeSurface):
         # Get points from surface vertices
-        source_points = source.vertices
+        source_points = np.array(source.vertices).astype(np.float32)
     elif isinstance(source, Volume):
         # Get points from volume data
         source_data = source.full_matrix()
@@ -36,13 +35,15 @@ def volume_distance(
             session.logger.warning("Source volume does not contain any non-zero data.")
             return
         # Transform indices to world coordinates
-        source_points = source.data.ijk_transform.transform_points(source_idx)
+        source_points = np.array(
+            source.data.ijk_to_xyz_transform.transform_points(source_idx)
+        ).astype(np.float32)
     else:
         session.logger.error("Source must be a Volume or VolumeSurface.")
         return
     if isinstance(to, VolumeSurface):
         # Get points from surface vertices
-        to_points = to.vertices
+        to_points = np.array(to.vertices).astype(np.float32)
     elif isinstance(to, Volume):
         # Get points from volume data
         to_data = to.full_matrix()
@@ -51,7 +52,9 @@ def volume_distance(
             session.logger.warning("Target volume does not contain any non-zero data.")
             return
         # Transform indices to world coordinates
-        to_points = to.data.ijk_transform.transform_points(to_idx)
+        to_points = np.array(
+            to.data.ijk_to_xyz_transform.transform_points(to_idx)
+        ).astype(np.float32)
     else:
         session.logger.error("Target must be a Volume or VolumeSurface.")
         return
@@ -64,8 +67,8 @@ def volume_distance(
 
 
 volume_distance_desc = CmdDesc(
-    required=[("source", Or(MapArg, SurfaceArg))],
-    keyword=[("to", Or(MapArg, SurfaceArg)), ("radius", float), ("internal", bool)],
+    required=[("source", Or(SurfaceArg, MapArg))],
+    keyword=[("to", SurfaceArg), ("radius", FloatArg), ("internal", BoolArg)],
     required_arguments=["to"],
     synopsis="Calculate the distance from distinct structures in a 3D volume to the closest points in another volume.",
 )
@@ -136,22 +139,26 @@ def _find_closest_point_octree(point: Point, octree: OcTree) -> Point:
 
 
 def _separate_structures(points: np.ndarray, radius: float = 2.0) -> np.ndarray:
-    """Separate 3D classifications into distinct structures using DBSCAN clustering and pre-computed neighbours for memory efficiency and returns the center of those clusters."""
-    neigh = NearestNeighbors(radius=radius)
-    neigh.fit(points)
-    # Use DBSCAN to cluster points based on the pre-computed neighbours
-    db = DBSCAN(eps=radius, min_samples=10, metric="precomputed")
-    clusters = db.fit_predict(neigh.radius_neighbors_graph(points).toarray())
+    """Separate 3D classifications into distinct structures using OPTICS clustering and returns the center of those clusters."""
+    optics = OPTICS(min_samples=5, max_eps=5 * radius)
+    optics.fit(points)
+    # Extract clusters with DBSCAN
+    clusters = cluster_optics_dbscan(
+        reachability=optics.reachability_,
+        core_distances=optics.core_distances_,
+        ordering=optics.ordering_,
+        eps=radius,
+    )
     cluster_ids = np.unique(clusters)
-    cluster_centroids = np.array([], dtype=np.uint8)
+    cluster_centroids = []
     for cluster_id in cluster_ids:
         if cluster_id == -1:
             # Skip noise points
             continue
         mask = clusters == cluster_id
         cluster_points = points[mask]
-        cluster_centroids.append(np.mean(cluster_points, axis=0))
-    return cluster_centroids
+        cluster_centroids.append(np.mean(cluster_points, axis=0, dtype=np.float32))
+    return np.array(cluster_centroids)
 
 
 def _calculate_surface_points(
@@ -166,8 +173,8 @@ def _calculate_surface_points(
         idx = tree.query_ball_point(point, radius, eps=0, p=2)
         nbrhood = points[idx]
         # Estimate normal direction at query point using SVD
-        nbrhood_centered = nbrhood - np.mean(nbrhood, axis=0)
-        nbrhood_cov = np.cov(nbrhood_centered)
+        nbrhood_centered = nbrhood - np.mean(nbrhood, axis=0, dtype=np.float32)
+        nbrhood_cov = np.cov(nbrhood_centered, dtype=np.float32)
         U, S, _ = np.linalg.svd(nbrhood_cov)
         # Use smallest eigenvector as normal direction
         normal = U[:, np.argmin(S)]
@@ -184,7 +191,9 @@ def _calculate_distance(
     points: np.ndarray, surface_points: np.ndarray
 ) -> Tuple[np.ndarray, np.ndarray]:
     """Calculate the distance from each point to the closest point in a list of surface points using OcTrees."""
-    top_left, bottom_right = Point(0, 0, 0), Point(*surface_points.shape)
+    top_left, bottom_right = Point(*np.min(surface_points, axis=0)), Point(
+        *np.max(surface_points, axis=0)
+    )
     octree = OcTree(
         point=None, top_left=top_left, bottom_right=bottom_right
     )  # Create an empty octree
