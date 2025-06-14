@@ -1,14 +1,13 @@
 from queue import PriorityQueue
-from typing import Tuple
+from typing import List, Tuple
 from .octree import Point, OcTree
 
 import numpy as np
 from scipy import spatial
 from sklearn.cluster import OPTICS, cluster_optics_dbscan
 
-from chimerax.core.commands import CmdDesc, Or, SurfaceArg, FloatArg, BoolArg
+from chimerax.core.commands import CmdDesc, ModelsArg, SurfaceArg, FloatArg, BoolArg
 from chimerax.map import Volume, VolumeSurface
-from chimerax.map.mapargs import MapArg
 
 # ============================================================================
 # Functions and descriptions for registering using ChimeraX bundle API
@@ -18,58 +17,52 @@ from chimerax.map.mapargs import MapArg
 def volume_distance(
     session,
     source: Volume | VolumeSurface,
-    to: Volume | VolumeSurface,
+    to: VolumeSurface | None,
     radius: float = 1.0,
-    internal: bool = False,
+    use_internal: bool = False,
+    time_it: bool = True,
 ) -> None:
     """Calculate distances from a segmented volume/surface to the closest other segmented volume/surface and displays them."""
-    session.logger.info("Loading volume data...")
-    if isinstance(source, VolumeSurface):
-        # Get points from surface vertices
-        source_points = np.array(source.vertices).astype(np.float32)
-    elif isinstance(source, Volume):
-        # Get points from volume data
-        source_data = source.full_matrix()
-        source_idx = np.argwhere(source_data > 0)
-        if source_idx.size == 0:
-            session.logger.warning("Source volume does not contain any non-zero data.")
-            return
-        # Transform indices to world coordinates
-        source_points = np.array(
-            source.data.ijk_to_xyz_transform.transform_points(source_idx)
-        ).astype(np.float32)
-    else:
+    if not isinstance(source, (Volume, VolumeSurface)):
         session.logger.error("Source must be a Volume or VolumeSurface.")
         return
-    if isinstance(to, VolumeSurface):
-        # Get points from surface vertices
-        to_points = np.array(to.vertices).astype(np.float32)
-    elif isinstance(to, Volume):
-        # Get points from volume data
-        to_data = to.full_matrix()
-        to_idx = np.argwhere(to_data > 0)
-        if to_idx.size == 0:
-            session.logger.warning("Target volume does not contain any non-zero data.")
-            return
-        # Transform indices to world coordinates
-        to_points = np.array(
-            to.data.ijk_to_xyz_transform.transform_points(to_idx)
-        ).astype(np.float32)
-    else:
-        session.logger.error("Target must be a Volume or VolumeSurface.")
-        return
-    _calculate_volume_distance(
-        session, source, source_points, to, to_points, radius, internal
-    )
-    session.logger.info(
-        f"Calculated distances from volume '{source.name}' to volume '{to.name}'."
-    )
+    session.logger.info("Loading volume data...")
+    try:
+        if time_it:
+            import time
+
+            start_time = time.time()
+        session.logger.info(
+            f"Calculating distances from source '{source.name}' to target '{to.name if to else 'self'}' with radius {radius} and internal={use_internal}."
+        )
+        if to is None:
+            distances = _calculate_intravolume_distance(
+                session, source, radius=radius, internal=use_internal
+            )
+        else:
+            distances = _calculate_intervolume_distance(
+                session, source, to, radius=radius, internal=use_internal
+            )
+        session.logger.info(f"Distance calculation completed.")
+        if time_it:
+            end_time = time.time()
+            session.logger.info(
+                f"Total time taken: {end_time - start_time:.2f} seconds."
+            )
+        # Save distances to a file
+        np.save("distances.npy", distances)
+    except Exception as e:
+        session.logger.error(f"Error calculating distances: {e}")
 
 
 volume_distance_desc = CmdDesc(
-    required=[("source", Or(SurfaceArg, MapArg))],
-    keyword=[("to", SurfaceArg), ("radius", FloatArg), ("internal", BoolArg)],
-    required_arguments=["to"],
+    required=[("source", ModelsArg)],
+    keyword=[
+        ("to", SurfaceArg),
+        ("radius", FloatArg),
+        ("use_internal", BoolArg),
+        ("time_it", BoolArg),
+    ],
     synopsis="Calculate the distance from distinct structures in a 3D volume to the closest points in another volume.",
 )
 
@@ -138,7 +131,7 @@ def _find_closest_point_octree(point: Point, octree: OcTree) -> Point:
 #### Define ChimeraX commands for calculating distances ####
 
 
-def _separate_structures(points: np.ndarray, radius: float = 2.0) -> np.ndarray:
+def _separate_structures(points: np.ndarray, radius: float = 2.0) -> List[np.ndarray]:
     """Separate 3D classifications into distinct structures using OPTICS clustering and returns the center of those clusters."""
     optics = OPTICS(min_samples=5, max_eps=5 * radius)
     optics.fit(points)
@@ -148,21 +141,21 @@ def _separate_structures(points: np.ndarray, radius: float = 2.0) -> np.ndarray:
         core_distances=optics.core_distances_,
         ordering=optics.ordering_,
         eps=radius,
-    )
+    ).astype(np.uint8)
     cluster_ids = np.unique(clusters)
-    cluster_centroids = []
+    clusters = []
     for cluster_id in cluster_ids:
         if cluster_id == -1:
             # Skip noise points
             continue
         mask = clusters == cluster_id
         cluster_points = points[mask]
-        cluster_centroids.append(np.mean(cluster_points, axis=0, dtype=np.float32))
-    return np.array(cluster_centroids)
+        clusters.append(cluster_points)
+    return clusters
 
 
 def _calculate_surface_points(
-    points: np.ndarray, radius: float = 1.0, point_tol: int = 1
+    points: np.ndarray, radius: float = 1.0, point_tol: int = 2
 ) -> np.ndarray:
     """Calculate surface points of a 3D volume as an nx3 numpy array using surface normal estimation."""
     # Get points from volume
@@ -179,7 +172,7 @@ def _calculate_surface_points(
         # Use smallest eigenvector as normal direction
         normal = U[:, np.argmin(S)]
         # Search for points in circular patches in the normal direction
-        centers = [point + normal * radius / 2, point - normal * radius / 2]
+        centers = (point + normal * radius / 2, point - normal * radius / 2)
         for center in centers:
             nbrhood_idx = tree.query_ball_point(center, radius / 2, eps=0, p=2)
             if len(nbrhood_idx) < point_tol:
@@ -188,8 +181,8 @@ def _calculate_surface_points(
 
 
 def _calculate_distance(
-    points: np.ndarray, surface_points: np.ndarray
-) -> Tuple[np.ndarray, np.ndarray]:
+    point: np.array, surface_points: np.ndarray
+) -> Tuple[np.array, float]:
     """Calculate the distance from each point to the closest point in a list of surface points using OcTrees."""
     top_left, bottom_right = Point(*np.min(surface_points, axis=0)), Point(
         *np.max(surface_points, axis=0)
@@ -197,31 +190,25 @@ def _calculate_distance(
     octree = OcTree(
         point=None, top_left=top_left, bottom_right=bottom_right
     )  # Create an empty octree
-    closest_points = np.array([], dtype=np.float32)
-    distances = np.array([], dtype=np.float32)
-    for point in points:
-        closest_point = _find_closest_point_octree(Point(*point), octree)
-        if closest_point is None:
-            continue
-        distance = _calculate_distance_between_points(Point(*point), closest_point)
-        closest_points.append(
-            np.array([closest_point.x, closest_point.y, closest_point.z])
-        )
-        distances.append(distance)
-    return closest_points, distances
+    closest_point = _find_closest_point_octree(Point(*point), octree)
+    if closest_point is None:
+        return None, None
+    distance = _calculate_distance_between_points(Point(*point), closest_point)
+    return np.array([closest_point.x, closest_point.y, closest_point.z]), distance
 
 
 def _calculate_distance_internal(
-    points: np.ndarray, surface_points: np.ndarray, max_distance: float = 1000.0
-) -> Tuple[np.ndarray, np.ndarray]:
+    point: np.array, surface_points: np.ndarray, max_distance: float = 1000.0
+) -> Tuple[np.array, float]:
     from chimerax.geometry import find_closest_points
 
     """Calculate the distance from each point to the closest point in a list of surface points using ChimeraX find_closest_points method."""
-    _, _, closest_points = find_closest_points(
-        points, surface_points, max_distance=max_distance
+    _, _, closest_idxs = find_closest_points(
+        np.expand_dims(point, axis=0), surface_points, max_distance=max_distance
     )
-    distances = np.linalg.norm(points - closest_points, axis=1)
-    return closest_points, distances
+    closest_point = surface_points[closest_idxs[0]]
+    distance = np.linalg.norm(point - closest_point, axis=1)
+    return closest_point, distance
 
 
 def _display_distance(
@@ -268,57 +255,108 @@ def _display_distance(
         )
 
 
-def _calculate_volume_distance(
+def _calculate_intravolume_distance(
     session,
     source: Volume | VolumeSurface,
-    source_points: np.ndarray,
-    target: Volume | VolumeSurface,
-    target_points: np.ndarray,
     radius: float = 1.0,
-    internal: bool = False,
-    time_it: bool = True,
-) -> None:
-    """Calculate distances from a segmented volume to the closest other segmented volume and displays them."""
-    if time_it:
-        import time
-
-        start_time = time.time()
-
-    source_name = source.name
-    # Increase neighbourhood radius for surface points
-    radius = radius if isinstance(source, Volume) else 5 * radius
-    # Get the centroid of each cluster in the source volume
-    source_centroids = _separate_structures(source_points, radius=radius)
-    session.logger.info(
-        f"Found {len(source_centroids)} distinct structures in source '{source_name}'."
-    )
-
-    target_name = target.name
-    if isinstance(target, Volume):
-        surface_points = _calculate_surface_points(
-            target_points, radius=radius, point_tol=1
+    use_internal: bool = False,
+) -> np.array:
+    """Calculate distances from a segmented volume/surface to the closest points in itself and displays them."""
+    if isinstance(source, Volume):
+        # Convert volume data into surface points
+        data_matrix = source.full_matrix()
+        # TODO: compare idx uint16 image with converted to xyz coordinates
+        source_idx = np.argwhere(data_matrix > 0).astype(
+            np.uint16
+        )  # should be the same, just translated and rotated
+        if source_idx.size == 0:
+            raise ValueError("Source volume does not contain any non-zero data.")
+        surface_points = _calculate_surface_points(source_idx, radius=radius).astype(
+            np.float32
         )
     else:
-        # Use vertices from the surface
-        surface_points = target_points
-    if internal:
-        # Use ChimeraX find_closest_points method
-        closest_points, distances = _calculate_distance_internal(
-            source_centroids, surface_points, max_distance=np.max(source.data.size)
+        surface_points = np.array(source.vertices).astype(np.float32)
+        # Increase neighbourhood radius size for surface points
+        radius = 5 * radius
+    # Cluster points into distinct structures
+    clusters = _separate_structures(surface_points, radius=radius)
+    # Calculate distances between clusters
+    source_points = np.zeros((len(clusters), 3), dtype=np.float32)
+    closest_points = np.zeros((len(clusters), 3), dtype=np.float32)
+    distances = np.zeros(len(clusters), dtype=np.float32)
+    for i, cluster in enumerate(clusters):
+        point = np.mean(cluster, axis=0)
+        # Get all surface points except the current cluster
+        surface_points_outside = np.hstack(
+            [clusters[j] for j in range(len(clusters)) if j != i]
         )
-    else:
-        # Use octree method
-        closest_points, distances = _calculate_distance(
-            source_centroids, surface_points
-        )
-    # closest_points is n x 3 and distances is n x 1
-    _display_distance(
-        session, source_name, source_centroids, target_name, closest_points
-    )
-    # Display distances histogram
+        if use_internal:
+            # Use ChimeraX find_closest_points method
+            closest_point, distance = _calculate_distance_internal(
+                point, surface_points_outside, max_distance=np.max(source.data.size)
+            )
+        else:
+            # Use octree method
+            closest_point, distance = _calculate_distance(point, surface_points_outside)
+        if closest_point is None or distance is None:
+            session.logger.warning(
+                f"Could not calculate distance for point {point} in source '{source.name}'."
+            )
+            continue
+        source_points[i] = point
+        closest_points[i] = closest_point
+        distances[i] = distance
+    # Display distance
+    _display_distance(session, source.name, source_points, source.name, closest_points)
+    return distances
 
-    if time_it:
-        end_time = time.time()
-        session.logger.info(
-            f"Calculated distances in {end_time - start_time:.2f} seconds."
-        )
+
+def _calculate_intervolume_distance(
+    session,
+    source: Volume | VolumeSurface,
+    target: VolumeSurface,
+    radius: float = 1.0,
+    use_internal: bool = False,
+) -> np.array:
+    """Calculate distances from a segmented volume/surface to the closest other segmented surface and displays them."""
+    if isinstance(source, Volume):
+        # Convert volume data into surface points
+        data_matrix = source.full_matrix()
+        source_idx = np.argwhere(data_matrix > 0).astype(
+            np.uint16
+        )  # should be the same, just translated and rotated
+        if source_idx.size == 0:
+            raise ValueError("Source volume does not contain any non-zero data.")
+        source_surface_points = _calculate_surface_points(
+            source_idx, radius=radius
+        ).astype(np.float32)
+    else:
+        source_surface_points = np.array(source.vertices).astype(np.float32)
+    target_surface_points = np.array(target.vertices).astype(np.float32)
+    # Cluster points into distinct structures
+    clusters = _separate_structures(source_surface_points, radius=radius)
+    # Calculate distances between cluster and target surface points
+    source_points = np.zeros((len(clusters), 3), dtype=np.float32)
+    closest_points = np.zeros((len(clusters), 3), dtype=np.float32)
+    distances = np.zeros(len(clusters), dtype=np.float32)
+    for i, cluster in enumerate(clusters):
+        point = np.mean(cluster, axis=0)
+        if use_internal:
+            # Use ChimeraX find_closest_points method
+            closest_point, distance = _calculate_distance_internal(
+                point, target_surface_points, max_distance=np.max(source.data.size)
+            )
+        else:
+            # Use octree method
+            closest_point, distance = _calculate_distance(point, target_surface_points)
+        if closest_point is None or distance is None:
+            session.logger.warning(
+                f"Could not calculate distance for point {point} in source '{source.name}'."
+            )
+            continue
+        source_points[i] = point
+        closest_points[i] = closest_point
+        distances[i] = distance
+    # Display distance
+    _display_distance(session, source.name, source_points, source.name, closest_points)
+    return distances
