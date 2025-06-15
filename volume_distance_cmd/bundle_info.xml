@@ -6,14 +6,14 @@ will be displayed without the ChimeraX- prefix.
 -->
 
 <BundleInfo name="ChimeraX-VolumeDistanceCommand"
-            version="0.1.1" package="chimerax.volume_distance"
+            version="0.2.0" package="chimerax.volume_distance"
             minSessionVersion="1" maxSessionVersion="1">
 
     <Author>Vivian Li</Author>
     <Email>vdl21@cantab.ac.uk</Email>
     <URL>https://github.com/VivianDLi/ChimeraX_Scripts/tree/main/volume_distance_cmd</URL>
     <Synopsis>Calculate the shortest distance between distinct sections of two volumes.</Synopsis>
-    <Description>This command calculates the shortest distance between distinct sections of two volumes. This is useful for determining the distances between elements of two segmentation volumes to view statistically, for example, to produce a histogram of the shortest distance between nuclear pores and nearby mitochondria.</Description>
+    <Description>This command calculates the shortest distance between distinct sections of two or more volumes. This is useful for determining the distances between elements of two segmentation volumes to view statistically, for example, to produce a histogram of the shortest distance between nuclear pores and nearby mitochondria.</Description>
 
     <!-- Categories is a list where this bundle should appear -->
     <Categories>
@@ -30,6 +30,8 @@ will be displayed without the ChimeraX- prefix.
 
     <Classifiers>
         <!-- ChimeraX classifiers describe supplied functionality -->
-        <ChimeraXClassifier>ChimeraX :: Command :: volume distance :: Structure Analysis :: Calculate distances between distinct sections of two volumes</ChimeraXClassifier>
+        <ChimeraXClassifier>ChimeraX :: Command :: volume distance single :: Structure Analysis :: Calculate distances between distinct sections of a volume or two volumes</ChimeraXClassifier>
+        <ChimeraXClassifier>ChimeraX :: Command :: volume distance multi :: Structure Analysis :: Calculate shortest distance between two specified sets of volumes</ChimeraXClassifier>
+        <ChimeraXClassifier>ChimeraX :: Command :: volume distance group :: Structure Analysis :: Calculate histogram of distances between volume groups (i.e., a model with multiple volume children)</ChimeraXClassifier>
     </Classifiers>
 </BundleInfo>
