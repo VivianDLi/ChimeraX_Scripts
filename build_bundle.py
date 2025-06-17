@@ -11,4 +11,4 @@ if "dist" in bundle_path.glob("*"):
 devel_build(session, str(bundle_path))
 
 wheel_path = list(map(str, list((bundle_path / "dist").glob("*.whl"))))
-toolshed_install(session, wheel_path, reinstall=True)  # type: ignore
+toolshed_install(session, wheel_path, reinstall=False)  # type: ignore

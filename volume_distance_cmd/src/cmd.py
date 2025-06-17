@@ -373,9 +373,11 @@ def _separate_structures(
         curvatures[i] = eig_vals[np.argmin(eig_vals)] / np.sum(eig_vals)
 
     # Set default values for thresholds if not provided
-    if curv_threshold is None:
-        curv_threshold = np.percentile(curvatures, 75)
-    if angle_threshold is None:
+    if curv_threshold is None:  # Allowable curvature deviation for cluster growth
+        curv_threshold = 1.0  # No additional conditions
+    if (
+        angle_threshold is None
+    ):  # Allowable normal deviation within neighbours of the same cluster
         angle_threshold = 45.0 * math.pi / 180.0  # 45 degrees in radians
 
     # Perform region growing clustering
@@ -471,13 +473,19 @@ def _calculate_distance(
 
 def _calculate_distances(
     points: np.ndarray, surface_points: np.ndarray
-) -> Tuple[np.ndarray, np.array]:
-    """Calculate the distance from each point to the closest point in a list of surface points using OcTrees."""
+) -> Tuple[np.array, np.array, float]:
+    """Calculate the distance from each point to the closest point in a list of surface points using KDTrees."""
     # Create KDTree for fast nearest neighbour search
     tree = spatial.KDTree(surface_points)
     distances, closest_idxs = tree.query(points, workers=-1)
-    closest_points = tree.data[closest_idxs]
-    return np.array(closest_points), np.array(distances)
+    min_idx = np.argmin(distances)
+    point = points[min_idx]
+    closest_idx = closest_idxs[min_idx]
+    distance = distances[min_idx]
+    if distance == np.inf or closest_idx == tree.n:  # No neighbours found
+        return point, point, 0
+    closest_point = tree.data[closest_idx]
+    return np.array(point), np.array(closest_point), float(distance)
 
 
 def _calculate_distance_internal(
@@ -496,7 +504,7 @@ def _calculate_distance_internal(
 
 def _calculate_distances_internal(
     points: np.ndarray, surface_points: np.ndarray, max_distance: float = np.inf
-) -> Tuple[np.ndarray, np.array]:
+) -> Tuple[np.array, np.array, float]:
     """Calculate the distance from each point to the closest point in a list of surface points using ChimeraX find_closest_points method."""
     from chimerax.geometry import find_closest_points
 
@@ -505,7 +513,11 @@ def _calculate_distances_internal(
     )
     closest_points = surface_points[closest_idxs]
     distances = np.linalg.norm(points - closest_points, axis=1)
-    return np.array(closest_points), np.array(distances)
+    min_idx = np.argmin(distances)
+    point = points[min_idx]
+    closest_point = closest_points[min_idx]
+    distance = distances[min_idx]
+    return np.array(point), np.array(closest_point), float(distance)
 
 
 def _calculate_distances_between_clusters(
@@ -542,31 +554,31 @@ def _calculate_distances_between_clusters(
                 closest_point, distance = _calculate_distance(
                     point, target_surface_points
                 )
-            if closest_point is None or distance is None:
-                session.logger.warning(
-                    f"Could not calculate distance for the cluster {i}'."
-                )
-                continue
-            else:
-                source_points[i] = point
-                closest_points[i] = closest_point
-                distances[i] = distance
         else:
             if use_internal:
                 # Use ChimeraX find_closest_points method
-                closest_points, distances = _calculate_distances_internal(
+                point, closest_point, distance = _calculate_distances_internal(
                     s_c, target_surface_points, max_distance=np.inf
                 )
             else:
                 # Use octree method
-                closest_points, distances = _calculate_distances(
+                point, closest_point, distance = _calculate_distances(
                     s_c, target_surface_points
                 )
-            source_points = s_c
+        if closest_point is None or distance is None:
+            session.logger.warning(
+                f"Could not calculate distance for the cluster {i}'."
+            )
+            continue
+        else:
+            source_points[i] = point
+            closest_points[i] = closest_point
+            distances[i] = distance
     # Remove zero-distance or inf-distance clusters
     source_points = source_points[~np.logical_or(distances == 0, distances == np.inf)]
     closest_points = closest_points[~np.logical_or(distances == 0, distances == np.inf)]
     distances = distances[~np.logical_or(distances == 0, distances == np.inf)]
+    distances /= 10.0  # Convert Anstroms to nanometers
     return source_points, closest_points, distances
 
 
